@@ -1,0 +1,819 @@
+package com.learning.springboot.chapter04;
+
+/*
+ * ═══════════════════════════════════════════════════════════════════════════════════════
+ * ║                                                                                       ║
+ * ║             HOW IT WORKS: SPRING DATA JPA — INTERNAL MECHANICS                       ║
+ * ║                                                                                       ║
+ * ═══════════════════════════════════════════════════════════════════════════════════════
+ *
+ * File:        HowItWorksExplained.java
+ * Purpose:     Deep dive into what happens UNDER THE HOOD when Spring Data JPA
+ *              processes annotations, generates SQL, manages sessions, and
+ *              coordinates with Hibernate. Zero code needed — pure explanation.
+ * Difficulty:  ⭐⭐⭐⭐⭐ Advanced
+ * Time:        60–120 minutes (read + reflect)
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════
+ */
+
+/**
+ * ┌─────────────────────────────────────────────────────────────────────────────────────┐
+ * │                                                                                       │
+ * │            HOW SPRING DATA JPA WORKS — FROM ANNOTATION TO DATABASE                   │
+ * │                                                                                       │
+ * └─────────────────────────────────────────────────────────────────────────────────────┘
+ */
+public class HowItWorksExplained {
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║         STAGE 1: APPLICATION STARTUP — WHAT SPRING BOOT DOES                ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * When you run SpringApplication.run(SpringBootAnnotationsApplication.class, args)
+     * a LOT happens behind the scenes before your first HTTP request arrives.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * STEP 1: Spring Boot Auto-Configuration Kicks In
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Spring Boot detects 'spring-boot-starter-data-jpa' on the classpath.
+     * HibernateJpaAutoConfiguration and DataSourceAutoConfiguration activate.
+     *
+     * Auto-configured beans (that you get for FREE):
+     *
+     *   ┌──────────────────────────────────────────────────────────────────────────┐
+     *   │  DataSource           ← HikariCP connection pool                         │
+     *   │  EntityManagerFactory ← Hibernate SessionFactory wrapper                 │
+     *   │  JpaTransactionManager← Manages @Transactional boundaries                │
+     *   │  LocalContainerEntityManagerFactoryBean ← Creates EntityManagerFactory   │
+     *   │  PlatformTransactionManager ← Coordinates transactions                   │
+     *   └──────────────────────────────────────────────────────────────────────────┘
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * STEP 2: Entity Scanning — Hibernate Discovers @Entity Classes
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Hibernate scans the classpath for all classes annotated with @Entity.
+     * For each @Entity class, Hibernate:
+     *
+     *   1. Reads @Table → determines the table name
+     *   2. Reads @Column on each field → determines column names, types, constraints
+     *   3. Reads @Id → identifies the primary key field
+     *   4. Reads @GeneratedValue → determines how IDs are generated
+     *   5. Reads @OneToMany, @ManyToOne, etc. → builds the relationship graph
+     *   6. Reads @NamedQuery → compiles and caches named queries
+     *   7. Reads @SQLRestriction → stores global filter expressions
+     *
+     * This builds a METADATA MODEL — a complete in-memory description of how
+     * Java classes map to database tables. Think of it as the "schema rules."
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * STEP 3: DDL Generation (spring.jpa.hibernate.ddl-auto)
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Based on the metadata model, Hibernate generates and executes DDL statements:
+     *
+     *   ddl-auto: create-drop  (our setting for learning/dev)
+     *   ────────────────────────────────────────────────────────────────────────
+     *   On startup:
+     *     DROP TABLE IF EXISTS tbl_books;
+     *     DROP TABLE IF EXISTS tbl_articles;
+     *     ... (drops all managed tables)
+     *
+     *     CREATE TABLE tbl_books (
+     *         id           BIGINT GENERATED BY DEFAULT AS IDENTITY,
+     *         title        VARCHAR(300) NOT NULL,
+     *         author       VARCHAR(200) NOT NULL,
+     *         isbn         VARCHAR(20)  UNIQUE,
+     *         price        DECIMAL(8,2),
+     *         category     VARCHAR(20)  NOT NULL,
+     *         deleted      BOOLEAN      NOT NULL DEFAULT FALSE,
+     *         deleted_at   TIMESTAMP,
+     *         PRIMARY KEY (id)
+     *     );
+     *     ... (creates all managed tables)
+     *
+     *   On shutdown:
+     *     DROP TABLE tbl_books;
+     *     ... (drops all managed tables again)
+     *
+     *   ddl-auto options:
+     *     none        → Do nothing (production)
+     *     validate    → Verify schema matches entities; throw if not (pre-prod)
+     *     update      → Add missing columns/tables; never drops (dev, risky)
+     *     create      → Drop + recreate on startup (dev)
+     *     create-drop → Drop + recreate on startup; drop on shutdown (testing)
+     *
+     *   ⚠️  PRODUCTION RULE: Always use 'none' or 'validate' in production.
+     *       Use Flyway or Liquibase for database migrations in production.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * STEP 4: Spring Data JPA Repository Bootstrap
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Spring Data scans for interfaces that extend JpaRepository (or its supers).
+     * For each repository interface, Spring Data:
+     *
+     *   1. Reads all method signatures
+     *   2. For derived query methods (findByTitle): parses the method name
+     *      and generates JPQL automatically
+     *   3. For @Query methods: stores the JPQL/SQL for execution at call time
+     *   4. For @NamedQuery references: validates the named query exists on the entity
+     *   5. Creates a PROXY BEAN that implements the repository interface
+     *   6. Registers the proxy in the Spring ApplicationContext
+     *
+     * This proxy implements ALL methods from JpaRepository PLUS your custom ones.
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║         STAGE 2: WHAT HAPPENS WHEN YOU CALL repository.save(entity)          ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * Let's trace: bookRepository.save(new Book("Clean Code", "Robert Martin", ...))
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * CALL STACK (simplified):
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  bookRepository.save(book)          ← YOU call this
+     *       ↓
+     *  [Spring AOP Proxy intercepts]
+     *       ↓
+     *  @Transactional begins              ← Transaction opens (if not already open)
+     *       ↓
+     *  SimpleJpaRepository.save(entity)   ← Spring Data's default implementation
+     *       ↓
+     *  if (isNew(entity))                 ← ID is null → this is a NEW entity
+     *      entityManager.persist(entity)  ← Tell JPA to manage this entity
+     *  else
+     *      entityManager.merge(entity)    ← Merge detached entity state
+     *       ↓
+     *  @PrePersist method fires           ← Your lifecycle callback (set createdAt, updatedAt)
+     *       ↓
+     *  Entity moves to MANAGED state     ← Hibernate now tracks this object
+     *       ↓
+     *  Transaction commits               ← If no open transaction, auto-commits
+     *       ↓
+     *  Hibernate FLUSH occurs            ← Writes pending changes to DB
+     *       ↓
+     *  SQL executed:
+     *    INSERT INTO tbl_books (title, author, isbn, price, category, deleted, created_at, ...)
+     *    VALUES ('Clean Code', 'Robert Martin', '978...', 35.99, 'TECHNOLOGY', false, NOW(), ...)
+     *       ↓
+     *  DB assigns auto-generated ID (e.g., 1)
+     *       ↓
+     *  Hibernate reads back generated ID via JDBC getGeneratedKeys()
+     *       ↓
+     *  entity.id = 1                      ← YOUR entity object now has the ID!
+     *       ↓
+     *  Transaction ends, connection released to HikariCP pool
+     *       ↓
+     *  save() returns the entity (with ID populated)
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * THE PERSISTENCE CONTEXT (First-Level Cache):
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Within a single transaction, Hibernate maintains a PERSISTENCE CONTEXT
+     * (also called the "first-level cache" or "session").
+     *
+     * The persistence context is a MAP: entity identity → entity instance
+     * Key: (EntityClass, primaryKey) → e.g., (Book.class, 1L)
+     * Value: the Book object in memory
+     *
+     * WHAT THIS MEANS:
+     *
+     *   Book book1 = bookRepository.findById(1L).get();  // SELECT ... WHERE id=1
+     *   Book book2 = bookRepository.findById(1L).get();  // NO SQL! Returns cached object
+     *
+     *   book1 == book2  → TRUE! Same object reference from the cache.
+     *
+     * The persistence context lives for the DURATION OF ONE TRANSACTION.
+     * After the transaction ends, the context is cleared (all objects become DETACHED).
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * DIRTY CHECKING — Automatic Change Detection:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * When Hibernate loads an entity (SELECT), it takes a SNAPSHOT of its state.
+     * At FLUSH time (before transaction commits), Hibernate compares each managed
+     * entity to its snapshot. If anything changed → SQL UPDATE is generated.
+     *
+     * EXAMPLE:
+     *
+     *   @Transactional
+     *   public Book updatePrice(Long id, BigDecimal newPrice) {
+     *       Book book = bookRepository.findById(id).get();
+     *       // Hibernate snapshot: {title="Clean Code", price=35.99, ...}
+     *
+     *       book.setPrice(newPrice);  // price changed!
+     *
+     *       return book;
+     *       // NO save() call needed!
+     *       // At transaction end, Hibernate compares to snapshot:
+     *       //   price changed (35.99 → 29.99) → generate UPDATE
+     *       // SQL: UPDATE tbl_books SET price=29.99 WHERE id=1
+     *   }
+     *
+     * KEY INSIGHT: You NEVER need to call save() after modifying a LOADED entity
+     * inside a @Transactional method. Hibernate handles it automatically!
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║       STAGE 3: WHAT HAPPENS WHEN YOU CALL repository.findAll()               ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * Let's trace: bookRepository.findAll()
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * CALL STACK:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  bookRepository.findAll()           ← YOU call this
+     *       ↓
+     *  [Spring AOP Proxy intercepts]
+     *       ↓
+     *  Hibernate checks for @SQLRestriction on Book entity
+     *  → Finds: @SQLRestriction("deleted = false")
+     *       ↓
+     *  Hibernate builds JPQL:
+     *    "SELECT b FROM Book b WHERE b.deleted = false"
+     *  → Translated to SQL:
+     *    "SELECT b.id, b.title, b.author, ... FROM tbl_books b WHERE b.deleted = false"
+     *       ↓
+     *  JDBC executes the SQL against the database
+     *       ↓
+     *  ResultSet: each row is mapped to a Book object:
+     *    row (1, "Clean Code", "Robert Martin", ...) → new Book() + field mapping
+     *       ↓
+     *  @PostLoad fires for each Book object   ← Your lifecycle callback
+     *       ↓
+     *  Each Book added to persistence context (first-level cache)
+     *       ↓
+     *  Returns List<Book> to your service code
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * SECOND-LEVEL CACHE (optional, not enabled by default):
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Hibernate also supports a SECOND-LEVEL CACHE — a shared cache across transactions.
+     *
+     *   First-level cache:   Per-transaction, always active, automatic
+     *   Second-level cache:  Cross-transaction, shared, optional (EhCache, Redis, etc.)
+     *
+     * With second-level cache:
+     *   Transaction 1: SELECT * → fetches from DB, caches in L2 cache
+     *   Transaction 2: SELECT * → fetches from L2 cache (no DB hit!)
+     *
+     * Use @Cacheable (Spring cache abstraction) or Hibernate's @Cache annotation.
+     * Not covered in depth here, but important for high-performance applications.
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║       STAGE 4: HOW @TRANSACTIONAL WORKS INTERNALLY                           ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * @Transactional is implemented using SPRING AOP (Aspect-Oriented Programming).
+     * When Spring detects @Transactional on a method or class, it creates a PROXY
+     * around the bean that intercepts method calls.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * THE PROXY WRAPS YOUR METHOD:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  WHAT SPRING GENERATES (conceptually):
+     *
+     *  class BookServiceProxy extends BookService {
+     *
+     *      @Override
+     *      public Book createBook(String title, ...) {
+     *          // BEFORE your method:
+     *          TransactionStatus tx = transactionManager.getTransaction(def);
+     *          // → Opens DB connection from HikariCP pool
+     *          // → Begins transaction (SET autocommit = false)
+     *
+     *          try {
+     *              Book result = super.createBook(title, ...); // YOUR actual code runs
+     *
+     *              // AFTER your method (no exception):
+     *              transactionManager.commit(tx);
+     *              // → Hibernate flush (generates SQL)
+     *              // → DB COMMIT
+     *              // → Connection returned to pool
+     *
+     *              return result;
+     *
+     *          } catch (RuntimeException e) {
+     *              // ON EXCEPTION:
+     *              transactionManager.rollback(tx);
+     *              // → DB ROLLBACK (all changes undone)
+     *              // → Connection returned to pool
+     *              throw e;
+     *          }
+     *      }
+     *  }
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * PROPAGATION — What Happens When @Transactional Methods Call Each Other:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  PROPAGATION_REQUIRED (default):
+     *    → Use the EXISTING transaction if one is active.
+     *    → Create a NEW transaction if none exists.
+     *    → Both methods share the same transaction.
+     *    → If the inner method rolls back, the outer rolls back too.
+     *
+     *    serviceA.methodA()           ← Opens Transaction T1
+     *        → serviceB.methodB()     ← Joins T1 (no new transaction)
+     *    methodA() returns            ← Commits T1 (includes methodB's work)
+     *
+     *  PROPAGATION_REQUIRES_NEW:
+     *    → ALWAYS create a new transaction, suspending any existing one.
+     *    → Inner transaction is independent: can commit while outer rolls back.
+     *    → Use for: audit logging, notification sending (must succeed even if main fails).
+     *
+     *  PROPAGATION_NESTED:
+     *    → Creates a SAVEPOINT in the current transaction.
+     *    → Inner transaction can roll back to the savepoint without rolling back outer.
+     *    → Not supported by all databases.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * ISOLATION LEVELS — How Transactions See Each Other's Data:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  ISOLATION LEVEL        DIRTY READ   NON-REPEATABLE   PHANTOM READ
+     *  ─────────────────────  ─────────    ───────────────   ──────────────
+     *  READ_UNCOMMITTED       Possible     Possible          Possible
+     *  READ_COMMITTED         Prevented    Possible          Possible       ← Default (most DBs)
+     *  REPEATABLE_READ        Prevented    Prevented         Possible       ← MySQL default
+     *  SERIALIZABLE           Prevented    Prevented         Prevented      ← Slowest, safest
+     *
+     *  DIRTY READ:          Read data written by an uncommitted transaction (phantom value)
+     *  NON-REPEATABLE READ: Read same row twice, get different values (another committed update)
+     *  PHANTOM READ:        Read same query twice, get different number of rows (insert/delete)
+     *
+     *  Usage: @Transactional(isolation = Isolation.REPEATABLE_READ)
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * ROLLBACK RULES:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  Default Spring behaviour:
+     *    → ROLLBACK on RuntimeException and Error (unchecked exceptions)
+     *    → COMMIT on checked exceptions (Exception, IOException, etc.)
+     *
+     *  Custom rollback:
+     *    @Transactional(rollbackFor = IOException.class)
+     *    → Roll back even for checked IOException
+     *
+     *    @Transactional(noRollbackFor = CustomBusinessException.class)
+     *    → Commit even when CustomBusinessException is thrown
+     *
+     *  ⚠️  COMMON PITFALL: self-invocation bypass!
+     *
+     *  In BookService:
+     *    public void outerMethod() {
+     *        this.innerMethod();   // WRONG! Calls real object, NOT the proxy!
+     *                              // @Transactional on innerMethod is BYPASSED!
+     *    }
+     *
+     *    @Transactional
+     *    public void innerMethod() { ... }
+     *
+     *  FIX: Inject the service into itself, or restructure to avoid self-invocation.
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║       STAGE 5: HOW LAZY LOADING WORKS (AND WHEN IT BREAKS)                   ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * LAZY LOADING MECHANICS:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * When you load an Employee with a LAZY Department:
+     *
+     *   Employee emp = employeeRepository.findById(1L).get();
+     *
+     * SQL: SELECT e.id, e.name, e.salary FROM tbl_employees e WHERE e.id = 1
+     *      (notice: NO JOIN with departments!)
+     *
+     * At this point, emp.getDepartment() returns a HIBERNATE PROXY — not null,
+     * but not a real Department either. It's a fake object that EXTENDS Department.
+     *
+     * When you CALL a method on the proxy:
+     *
+     *   String deptName = emp.getDepartment().getName();  // Trigger lazy load!
+     *
+     * SQL: SELECT d.id, d.name, d.budget FROM tbl_departments d WHERE d.id = 5
+     *
+     * The proxy intercepts the getName() call, executes the SELECT, replaces
+     * itself with the real Department, and returns the name.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * LazyInitializationException — The MOST COMMON JPA ERROR:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * THE PROBLEM:
+     *   @Transactional service method loads an entity and returns it.
+     *   Transaction closes. Controller accesses a LAZY collection.
+     *   Hibernate tries to fire the lazy SQL but has no active session!
+     *
+     *   @Transactional
+     *   public Employee getEmployee(Long id) {
+     *       return employeeRepository.findById(id).get();
+     *       // Transaction ends here. Employee is now DETACHED.
+     *   }
+     *
+     *   // In Controller (outside transaction):
+     *   Employee emp = employeeService.getEmployee(1L);
+     *   emp.getDepartment().getName();  // 💥 LazyInitializationException!
+     *
+     * SOLUTIONS:
+     *
+     *   SOLUTION 1: JOIN FETCH in @Query
+     *     @Query("SELECT e FROM Employee e LEFT JOIN FETCH e.department WHERE e.id = :id")
+     *     Optional<Employee> findByIdWithDepartment(@Param("id") Long id);
+     *     → Loads employee AND department in ONE SQL query. No lazy load needed.
+     *
+     *   SOLUTION 2: @EntityGraph
+     *     @EntityGraph(attributePaths = {"department"})
+     *     Optional<Employee> findById(Long id);
+     *     → Spring Data adds LEFT JOIN FETCH for specified attributes.
+     *
+     *   SOLUTION 3: Use DTO projection
+     *     Return a DTO from the service that includes only the data needed.
+     *     No lazy collection to trigger outside the transaction.
+     *
+     *   SOLUTION 4: spring.jpa.open-in-view = true (AVOID!)
+     *     Keeps the session open until the HTTP response is sent.
+     *     Solves LazyInitializationException but causes performance problems:
+     *     → DB connection held for the entire HTTP request lifecycle
+     *     → Lazy loads triggered by JSON serializer = N+1 queries
+     *     → spring.jpa.open-in-view = false is the correct production setting
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║       STAGE 6: HOW SPRING DATA GENERATES QUERY IMPLEMENTATIONS              ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * For the method: findByAuthorAndPublishedOrderByViewCountDesc(String author, boolean published)
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * PARSING THE METHOD NAME:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Spring Data's PartTreeJpaQuery parses the method name:
+     *
+     *   findBy               → SELECT ... WHERE
+     *   Author               → a.author = ?
+     *   And                  → AND
+     *   Published            → a.published = ?
+     *   OrderBy              → ORDER BY
+     *   ViewCount            → a.viewCount
+     *   Desc                 → DESC
+     *
+     * Generated JPQL:
+     *   "SELECT a FROM Article a WHERE a.author = ?1 AND a.published = ?2 ORDER BY a.viewCount DESC"
+     *
+     * Converted to SQL by Hibernate dialect:
+     *   "SELECT a.id, a.title, ... FROM tbl_articles a WHERE a.author_name = ? AND a.published = ? ORDER BY a.view_count DESC"
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * HOW THE REPOSITORY PROXY IS CREATED:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Spring Data uses Java's java.lang.reflect.Proxy (or CGLIB proxy) to create
+     * a runtime implementation of your repository interface.
+     *
+     * Each method in the repository is backed by one of:
+     *   PartTreeJpaQuery      → for derived query methods (findByXxx)
+     *   StringBasedJpaQuery   → for @Query(JPQL) methods
+     *   NativeJpaQuery        → for @Query(nativeQuery=true) methods
+     *   NamedQuery            → for @NamedQuery references
+     *   StoredProcedureQuery  → for @Procedure methods
+     *
+     * When you call bookRepository.findByAuthor("Martin"),
+     * the proxy intercepts → finds the PartTreeJpaQuery → executes it with EntityManager.
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║       STAGE 7: THE N+1 QUERY PROBLEM — IN DETAIL                             ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * THE PROBLEM:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *   List<Department> departments = departmentRepository.findAll();
+     *
+     * SQL FIRED: 1 query
+     *   SELECT d.id, d.name FROM tbl_departments d
+     *   → Returns 100 departments
+     *
+     *   for (Department dept : departments) {
+     *       List<Employee> emps = dept.getEmployees();  // LAZY LOAD!
+     *       System.out.println(dept.getName() + " has " + emps.size() + " employees");
+     *   }
+     *
+     * SQL FIRED: 100 additional queries (one per department!)
+     *   SELECT e.id, e.name FROM tbl_employees e WHERE e.department_id = 1
+     *   SELECT e.id, e.name FROM tbl_employees e WHERE e.department_id = 2
+     *   ...
+     *   SELECT e.id, e.name FROM tbl_employees e WHERE e.department_id = 100
+     *
+     * TOTAL: 1 + 100 = 101 queries. That's the N+1 problem.
+     * For a list of 1000 departments, it's 1001 queries. PERFORMANCE DISASTER!
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * SOLUTION 1: JOIN FETCH
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *   @Query("SELECT DISTINCT d FROM Department d LEFT JOIN FETCH d.employees")
+     *   List<Department> findAllWithEmployees();
+     *
+     * SQL FIRED: 1 query (just ONE!)
+     *   SELECT DISTINCT d.id, d.name, e.id, e.name, e.salary
+     *   FROM tbl_departments d
+     *   LEFT JOIN tbl_employees e ON e.department_id = d.id
+     *
+     * Result: 100 departments, each with their employees already loaded. ✅
+     *
+     * WHY DISTINCT? Without it, departments with multiple employees appear
+     * multiple times in the result list (one row per employee in the JOIN).
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * SOLUTION 2: @EntityGraph
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *   @EntityGraph(attributePaths = {"employees"})
+     *   List<Department> findAll();
+     *
+     * Spring Data adds LEFT JOIN FETCH automatically.
+     * Cleaner than writing JOIN FETCH in every @Query.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * SOLUTION 3: Hibernate's @BatchSize
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *   @OneToMany(mappedBy = "department")
+     *   @BatchSize(size = 25)
+     *   private List<Employee> employees;
+     *
+     * Instead of 1 query per department, Hibernate loads employees in BATCHES of 25:
+     *   SELECT * FROM tbl_employees WHERE department_id IN (1, 2, 3, ..., 25)
+     *   SELECT * FROM tbl_employees WHERE department_id IN (26, 27, ..., 50)
+     *   ...
+     *
+     * For 100 departments: 4 queries instead of 100. Not perfect, but much better.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * DETECTION: Enable SQL logging and count queries
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  In application.yaml:
+     *    spring.jpa.show-sql: true
+     *    logging.level.org.hibernate.SQL: DEBUG
+     *
+     *  Count SQL statements in logs. If count > what you expect → N+1 problem!
+     *  Tools: p6spy, datasource-proxy, Hibernate Statistics, Hypersistence Optimizer
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║       STAGE 8: CONNECTION POOLING (HikariCP) — HOW IT WORKS                  ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * Spring Boot auto-configures HikariCP as the default connection pool.
+     * Understanding it helps with performance tuning and diagnosing issues.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * THE PROBLEM WITH RAW CONNECTIONS:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Creating a new DB connection is EXPENSIVE:
+     *   TCP connection + TLS handshake + DB auth = 20–100ms per connection
+     *
+     * If every query created a new connection and closed it:
+     *   1000 requests/second × 50ms per connection = 50 seconds waiting. Unusable!
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * HOW CONNECTION POOLING SOLVES IT:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  ┌──────────────────────────────────────────────────────────────────────────┐
+     *  │                         HIKARICP POOL (10 connections by default)        │
+     *  │                                                                           │
+     *  │  [Conn 1]  [Conn 2]  [Conn 3]  ...  [Conn 10]                           │
+     *  │   IDLE      IN USE    IDLE      ...   IDLE                               │
+     *  │                                                                           │
+     *  │  Transaction 1 → borrows Conn 2  (it was available)                     │
+     *  │  Transaction 2 → borrows Conn 4                                          │
+     *  │  Transaction 3 → waits (if all connections are in use)                  │
+     *  │                    ↓                                                      │
+     *  │  Transaction 1 finishes → returns Conn 2 → Transaction 3 gets it       │
+     *  └──────────────────────────────────────────────────────────────────────────┘
+     *
+     * Connections are created ONCE and REUSED. No setup cost per request.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * KEY HIKARICP SETTINGS:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  spring:
+     *    datasource:
+     *      hikari:
+     *        maximum-pool-size: 10      # Max connections in pool (default: 10)
+     *        minimum-idle: 5            # Min idle connections to maintain
+     *        connection-timeout: 30000  # Max ms to wait for a connection (30s)
+     *        idle-timeout: 600000       # Max ms a connection can sit idle (10min)
+     *        max-lifetime: 1800000      # Max lifetime of a connection (30min)
+     *        pool-name: BookAppPool     # Name for monitoring
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * POOL SIZING RULE OF THUMB:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Formula:  pool_size = (cores × 2) + effective_spindle_count
+     *
+     * For a 4-core server with SSD:  (4 × 2) + 1 = 9 → use 10
+     * For a 4-core server with HDD:  (4 × 2) + 4 = 12 → use 12
+     *
+     * COMMON MISTAKE: Setting pool size too HIGH.
+     * More connections ≠ better performance. DB has limited resources too.
+     * Idle connections still consume DB resources (memory, file handles).
+     * Test with realistic load and profile before tuning.
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║       STAGE 9: COMPLETE FLOW — ONE HTTP REQUEST END-TO-END                   ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * Request: POST /api/books  {"title":"Clean Code", "author":"Martin", ...}
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────
+     * COMPLETE CALL SEQUENCE:
+     * ─────────────────────────────────────────────────────────────────────────────────
+     *
+     *  HTTP Request arrives at port 8080
+     *       ↓
+     *  Embedded Tomcat accepts the request
+     *       ↓
+     *  DispatcherServlet (auto-configured) receives it
+     *       ↓
+     *  HandlerMapping finds: BookController.createBook() matches POST /api/books
+     *       ↓
+     *  @RequestBody: Jackson deserializes JSON → CreateBookRequest record
+     *       ↓
+     *  BookController.createBook(request) is called
+     *       ↓
+     *  BookController calls bookService.createBook(...)
+     *       ↓
+     *  [Spring AOP Proxy for BookService intercepts]
+     *       ↓
+     *  @Transactional starts: borrows connection from HikariCP pool
+     *       ↓
+     *  bookRepository.existsByIsbn(isbn)
+     *     → Hibernate generates: SELECT COUNT(*) FROM tbl_books WHERE isbn = ?
+     *     → Returns false (no existing book)
+     *       ↓
+     *  new Book(...) is created (TRANSIENT — no ID, not tracked by Hibernate)
+     *       ↓
+     *  bookRepository.save(book)
+     *     → entityManager.persist(book)
+     *     → Book moves to MANAGED state
+     *     → @PrePersist fires: sets timestamps, etc.
+     *       ↓
+     *  @Transactional ends (no exception): COMMIT
+     *     → Hibernate flushes: INSERT INTO tbl_books (...) VALUES (...)
+     *     → DB assigns id = 7
+     *     → book.id = 7 (populated by Hibernate)
+     *     → DB COMMIT
+     *     → Connection returned to HikariCP pool
+     *       ↓
+     *  createBook() returns the saved Book object (id=7)
+     *       ↓
+     *  BookController returns the Book to DispatcherServlet
+     *       ↓
+     *  Jackson serializes Book → JSON: {"id":7,"title":"Clean Code",...}
+     *       ↓
+     *  HTTP Response 201 CREATED with JSON body sent back to client
+     *
+     * Total time: typically 5–50ms for a simple insert (depending on DB, load, etc.)
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║                                                                               ║
+     * ║       STAGE 10: PRODUCTION CHECKLIST                                          ║
+     * ║                                                                               ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     *  ✅  spring.jpa.hibernate.ddl-auto = validate (or none)
+     *      Never use create or create-drop in production.
+     *
+     *  ✅  spring.jpa.open-in-view = false
+     *      Prevents holding DB connections for the entire HTTP request lifecycle.
+     *
+     *  ✅  spring.jpa.show-sql = false (or at WARN level)
+     *      Don't log every SQL statement in production — it's a I/O bottleneck.
+     *
+     *  ✅  Use Flyway or Liquibase for DB migrations.
+     *      Never let Hibernate manage schema in production.
+     *
+     *  ✅  Set HikariCP maximum-pool-size appropriately.
+     *      Match it to the number of DB connections your DB server can handle.
+     *
+     *  ✅  Add indexes for all FK columns and frequently queried columns.
+     *      Hibernate doesn't automatically create optimal indexes.
+     *
+     *  ✅  Use LAZY fetch for all associations (explicitly override @OneToOne/@ManyToOne defaults).
+     *
+     *  ✅  Use @Transactional(readOnly = true) on all read-only service methods.
+     *      Tells Hibernate to skip dirty checking → performance improvement.
+     *
+     *  ✅  Monitor Hibernate statistics in staging:
+     *      spring.jpa.properties.hibernate.generate_statistics = true
+     *      Exposes: query count, cache hit rate, connection count, etc.
+     *
+     *  ✅  Never return JPA entities directly from REST controllers.
+     *      Use DTOs to control serialization and avoid infinite recursion
+     *      (e.g., Department → Employee → Department → Employee → ...).
+     *
+     *  ✅  Handle OptimisticLockException at the service level for @Version entities.
+     *      Retry or return a friendly error message to the user.
+     *
+     * ═══════════════════════════════════════════════════════════════════════════════
+     */
+
+    public static void main(String[] args) {
+        System.out.println("╔═══════════════════════════════════════════════════════════════════╗");
+        System.out.println("║    CHAPTER 4 — HOW IT WORKS: Spring Data JPA Internal Mechanics   ║");
+        System.out.println("╚═══════════════════════════════════════════════════════════════════╝");
+        System.out.println();
+        System.out.println("  STAGE 1 :  Application Startup — Entity scanning, DDL generation");
+        System.out.println("  STAGE 2 :  repository.save()  — persist, @PrePersist, INSERT SQL");
+        System.out.println("  STAGE 3 :  repository.findAll() — SELECT, @PostLoad, L1 cache");
+        System.out.println("  STAGE 4 :  @Transactional — AOP proxy, propagation, isolation");
+        System.out.println("  STAGE 5 :  Lazy loading — Hibernate proxy, LazyInitializationException");
+        System.out.println("  STAGE 6 :  Derived query generation — parsing method names");
+        System.out.println("  STAGE 7 :  N+1 problem — detection, JOIN FETCH, @EntityGraph, @BatchSize");
+        System.out.println("  STAGE 8 :  HikariCP connection pool — why and how");
+        System.out.println("  STAGE 9 :  End-to-end HTTP request trace — from JSON to DB");
+        System.out.println("  STAGE 10:  Production checklist — 10 rules for production JPA");
+        System.out.println();
+        System.out.println("This file is theory-only — no code to run.");
+        System.out.println("Go back to Example01–04 to see all concepts in practice.");
+        System.out.println("═══════════════════════════════════════════════════════════════════");
+        System.out.println();
+        System.out.println("📚 Chapter 4 — Complete! You now know Spring Data JPA from Zero to Expert.");
+        System.out.println();
+        System.out.println("   Next Chapter: Chapter 5 — Spring Security Annotations");
+    }
+}
+

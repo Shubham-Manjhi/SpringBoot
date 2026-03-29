@@ -21,6 +21,9 @@ repositories {
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'      // Chapter 4 - Spring Data JPA
+    implementation 'org.springframework.boot:spring-boot-starter-validation'    // Chapter 7 - Validation
+    runtimeOnly    'com.h2database:h2'                                          // Chapter 4 - In-memory DB for examples
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
