@@ -23,8 +23,16 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'      // Chapter 4 - Spring Data JPA
     implementation 'org.springframework.boot:spring-boot-starter-validation'    // Chapter 7 - Validation
+    implementation 'org.springframework.boot:spring-boot-starter-security'      // Chapter 5 - Spring Security
+    // Note: spring-aop + aspectjweaver already provided transitively via spring-boot-starter-web
     runtimeOnly    'com.h2database:h2'                                          // Chapter 4 - In-memory DB for examples
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'       // Chapter 8 - @WebMvcTest, @AutoConfigureMockMvc
+    testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'     // Chapter 8 - @DataJpaTest
+    testImplementation 'org.springframework.boot:spring-boot-resttestclient'            // Chapter 8 - TestRestTemplate
+    testImplementation 'org.springframework.boot:spring-boot-restclient'                // Chapter 8 - RestTemplateBuilder (required by resttestclient)
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind'                    // Chapter 8 - ObjectMapper in WebMvcTest
+    testImplementation 'org.springframework.security:spring-security-test'              // Chapter 5 - @WithMockUser, @WithUserDetails
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
